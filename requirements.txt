@@ -1,0 +1,9 @@
+pandas
+langgraph
+langchain
+docling
+ipykernel
+fastapi
+langchain_openai
+pymupdf
+pytesseract
