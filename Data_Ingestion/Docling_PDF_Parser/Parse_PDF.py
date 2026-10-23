@@ -1,10 +1,11 @@
 import os
 import re
+import tempfile
 
-os.environ["TORCH_COMPILE_DISABLE"] = "1"
+# os.environ["TORCH_COMPILE_DISABLE"] = "1"
 
 import pymupdf as fitz
-import pytesseract
+# import pytesseract
 from PIL import Image
 
 from docling.datamodel.base_models import InputFormat
@@ -12,20 +13,19 @@ from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling_core.types.doc import PictureItem, TableItem, TextItem
 
-from Data_Ingestion.Pdf_Searchability import check_pdf_searchability
-from Model_Calling.Model_Service import build_image_message, get_llm
+from Data_Ingestion.Docling_PDF_Parser.Pdf_Searchability import check_pdf_searchability
+from Model_Calling.Model_Service import get_llm, invoke_llm
 
 # If running on Linux/WSL and tesseract is in PATH, you do not need tesseract_cmd.
 # If needed explicitly on Linux: pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
 
-def parse_pdf_with_docling(pdf_path: str, local_models_path: str = None) -> str:
+def parse_pdf_with_docling(pdf_path: str) -> str:
     """
     Parses a PDF using Docling and extracts OCR text from images.
 
     Args:
         pdf_path (str): Path to the PDF file.
-        local_models_path (str): Path to the local Docling models.
 
     Returns:
         str: The parsed content as a markdown string.
@@ -48,11 +48,11 @@ def parse_pdf_with_docling(pdf_path: str, local_models_path: str = None) -> str:
         total_pages = len(fitz_doc)
 
     complete_text = ""
-    llm = get_llm("generator")
+    
 
     for page_number in range(1, total_pages + 1):
-        image_searchable = check_pdf_searchability(pdf_path, page_number)
-
+        image_searchable = check_pdf_searchability(pdf_path, page_number,90)
+        # image_searchable= {"status": "searchable"}
         if image_searchable.get("status") == "searchable":
             print(f"Page {page_number} is already searchable.")
 
@@ -64,9 +64,27 @@ def parse_pdf_with_docling(pdf_path: str, local_models_path: str = None) -> str:
                 if isinstance(node, PictureItem):
                     pil_image = node.get_image(docling_doc)
                     if pil_image:
-                        ocr_text = pytesseract.image_to_string(pil_image, lang="hin+eng").strip()
-                        if ocr_text:
-                            ocr_texts.append(ocr_text)
+                        # 1. Create a temporary image file on disk
+                        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_file:
+                            temp_image_path = tmp_file.name
+                            pil_image.save(temp_image_path, format="PNG")
+
+                        try:
+                            # 2. Build message passing the temporary file path
+                            vlm_response = invoke_llm( model_name="openai/gpt-6-luna",
+                                                    prompt="Extract the text exactly as it appears in the image and format as Markdown.",
+                                                    is_image="y",                    # case-insensitive
+                                                    image_path=temp_image_path,
+                                                    pages=1,
+                                                    )
+                            ocr_text = vlm_response.get("response", "").strip()
+
+                            if ocr_text:
+                                ocr_texts.append(ocr_text)
+                        finally:
+                            # 4. Ensure cleanup even if an exception occurs
+                            if os.path.exists(temp_image_path):
+                                os.remove(temp_image_path)
 
             markdown_output = docling_doc.export_to_markdown()
 
@@ -103,23 +121,24 @@ def parse_pdf_with_docling(pdf_path: str, local_models_path: str = None) -> str:
                 for idx, ocr_text in enumerate(ocr_texts, 1):
                     enhanced_markdown += f"\n\n### Image {idx} OCR Text\n\n{ocr_text}\n"
 
-            complete_text += f"\n\n{enhanced_markdown}"
+            complete_text += f"{enhanced_markdown}\n\nPage {page_number} of {total_pages}\n\n"
 
         else:
             print(f"Page {page_number} requires vision extraction.")
-            msg = build_image_message(
-                prompt="Extract the text exactly as it appears in the image and format as Markdown.",
-                file_path=pdf_path,
-                pages=page_number,
-            )
-            vlm_response = llm.invoke([msg]).content
-            complete_text += f"\n\n{vlm_response}"
+
+            vlm_response = invoke_llm( model_name="openai/gpt-6-luna",
+                                        prompt="Extract the text exactly as it appears in the image and format as Markdown.",
+                                        is_image="y",                    # case-insensitive
+                                        image_path=pdf_path,
+                                        pages=page_number,
+                                        )
+            complete_text += f"{vlm_response['response']}\n\nPage {page_number} of {total_pages}\n\n"
 
     return complete_text.replace("&amp;", "&").strip()
 
 
 if __name__ == "__main__":
-    pdf_path = "/home/pankaj/projects/Agentic_Rag/20-1-43-016434.pdf"
+    pdf_path = "/home/pankaj/projects/Agentic_Rag/test.pdf"
     markdown_content = parse_pdf_with_docling(pdf_path)
     print("Final Markdown Content Preview (first 1000 chars):")
     print(markdown_content)

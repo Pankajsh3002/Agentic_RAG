@@ -21,11 +21,11 @@ Install:
 Usage:
     from pdf_searchability import check_pdf_searchability
 
-    check_pdf_searchability("file.pdf")                  # whole PDF
-    check_pdf_searchability("file.pdf", 3)               # page 3 only (1-based)
-    check_pdf_searchability("file.pdf", [1, 4, 7])       # selected pages
-    check_pdf_searchability("file.pdf", "2-5,9")         # ranges
-    check_pdf_searchability("file.pdf", ocr_check=True)  # verify against real OCR
+    check_pdf_searchability("file.pdf", 1, 95)           # page 1: up to 5% may be unsearchable
+    check_pdf_searchability("file.pdf", None, 95)        # whole PDF: up to 5% of ALL pages combined
+    check_pdf_searchability("file.pdf", [1, 4, 7], 90)   # selected pages combined
+    check_pdf_searchability("file.pdf", "2-5,9", 98)     # ranges
+    check_pdf_searchability("file.pdf", 1, 95, ocr_check=True)  # verify against real OCR
 
 CLI:
     python pdf_searchability.py file.pdf
@@ -203,13 +203,13 @@ def _analyze_page(
     page: "pymupdf.Page",
     page_no: int,
     *,
+    searchable_percent: float,
     ocr_check: bool,
     ocr_lang: str,
     dpi: int,
     block: int,
     min_ink_px: int,
     min_image_area_ratio: float,
-    gap_ok: float,
     gap_bad: float,
     stamp_max_words: int,
 ) -> Dict:
@@ -217,15 +217,17 @@ def _analyze_page(
     rect = page.rect
     page_area = rect.width * rect.height
 
+    # block / min_ink_px are defined at 100 dpi and scaled, so changing dpi is safe
+    s = dpi / 100.0
+    block_px = max(2, round(block * s))
+    min_ink = max(1, round(min_ink_px * s * s))
+
     # ---- text layer (visible AND invisible/OCR text is returned by PyMuPDF) ----
     raw_words = [w for w in page.get_text("words") if str(w[4]).strip()]
     total_words = len(raw_words)
-    good, bad = [], 0
+    good, bad = [], []
     for w in raw_words:
-        if _is_good_word(w[4]):
-            good.append(w)
-        else:
-            bad += 1
+        (good if _is_good_word(w[4]) else bad).append(w)
     good_words = len(good)
     good_ratio = good_words / total_words if total_words else 0.0
 
@@ -242,25 +244,41 @@ def _analyze_page(
         pass
 
     # ---- ink / coverage maps ----
-    ink, sx, sy = _ink_grid(page, dpi, block, min_ink_px, edge_margin=0.02)
+    ink, sx, sy = _ink_grid(page, dpi, block_px, min_ink, edge_margin=0.02)
     total_ink = int(ink.sum())
     has_ink = total_ink >= 10
 
-    text_mask = np.zeros_like(ink)
-    for w in good:  # only TRUSTWORTHY words are allowed to "cover" ink
+    text_mask = np.zeros_like(ink)   # ink under TRUSTWORTHY words  -> searchable
+    bad_mask = np.zeros_like(ink)    # ink under garbage words      -> NOT searchable
+    img_mask = np.zeros_like(ink)    # ink inside raster images     -> searchable only if covered
+    for w in good:
         r = pymupdf.Rect(w[:4]) * rot
         r.normalize()
-        _mark(text_mask, r, sx, sy, rect.x0, rect.y0, block, pad=1)
-
-    img_mask = np.zeros_like(ink)
+        _mark(text_mask, r, sx, sy, rect.x0, rect.y0, block_px, pad=1)
+    for w in bad:
+        r = pymupdf.Rect(w[:4]) * rot
+        r.normalize()
+        _mark(bad_mask, r, sx, sy, rect.x0, rect.y0, block_px)
     for r in img_rects:
-        _mark(img_mask, r, sx, sy, rect.x0, rect.y0, block)
+        _mark(img_mask, r, sx, sy, rect.x0, rect.y0, block_px)
     image_cov = float(img_mask.sum()) / img_mask.size
 
-    raster_gap = (
-        int((ink & img_mask & ~text_mask).sum()) / total_ink if total_ink else 0.0
-    )
-    text_cov_of_ink = int((ink & text_mask).sum()) / total_ink if total_ink else 0.0
+    # ---- searchable percentage of the page content --------------------------
+    # content      = ink that is text or should be text (under good words, garbage
+    #                words, or inside raster images). Plain vector lines/logos are ignored.
+    # searchable   = the part of that content sitting under good words.
+    covered_n = int((ink & text_mask).sum())
+    uncovered_n = int((ink & (img_mask | bad_mask) & ~text_mask).sum())
+    content_n = covered_n + uncovered_n
+
+    if total_words == 0 or good_words == 0:
+        content_n, covered_n = total_ink, 0          # nothing usable: all ink is unsearchable
+        pct = 0.0 if has_ink else 100.0
+    elif content_n == 0:
+        pct = 100.0                                   # words but nothing visible to search
+    else:
+        pct = 100.0 * covered_n / content_n
+
     has_scan_content = bool(img_rects) and int((ink & img_mask).sum()) >= 10
 
     metrics = {
@@ -269,26 +287,27 @@ def _analyze_page(
         "good_word_ratio": round(good_ratio, 3),
         "has_raster_images": bool(img_rects),
         "image_coverage": round(image_cov, 3),
-        "ink_covered_by_text": round(text_cov_of_ink, 3),
-        "uncovered_image_ink": round(raster_gap, 3),
+        "searchable_percent": round(pct, 2),
+        "content_blocks": content_n,          # weight used when pages are combined
+        "searchable_blocks": covered_n,
     }
 
-    # ---------------------------------------------------------------- decide
     def result(status: str, reason: str) -> Dict:
+        p = metrics["searchable_percent"]
         return {
             "page": page_no,
             "status": status,
+            "searchable_percent": p,
+            "unsearchable_percent": round(100.0 - p, 2),
             "needs_ocr": status in (PARTIAL, UNSEARCHABLE),
             "reason": reason,
             "metrics": metrics,
         }
 
+    # ---------------------------------------------------------------- decide
     if total_words == 0:
         if has_ink:
-            return result(
-                UNSEARCHABLE,
-                "No text layer at all - page content is image/graphics only (needs OCR).",
-            )
+            return result(UNSEARCHABLE, "No text layer at all - page content is image/graphics only (needs OCR).")
         return result(BLANK, "No text and no visible content.")
 
     if good_words == 0:
@@ -298,44 +317,27 @@ def _analyze_page(
             "symbol soup) - typical of a bad OCR layer or broken font encoding.",
         )
 
-    # --- heuristic verdict ---
-    if not has_scan_content:
-        # pure digital page: judge only by text quality
-        if good_ratio >= 0.6:
-            status, reason = SEARCHABLE, "Digital text layer with good-quality text."
-        elif good_ratio >= 0.35:
-            status, reason = PARTIAL, "Part of the text layer is garbled / unreliable."
-        else:
-            status, reason = UNSEARCHABLE, "Text layer is mostly garbled / unreliable."
+    low_cut = (1.0 - gap_bad) * 100.0   # "almost nothing is searchable" boundary (default 20 %)
+
+    if pct >= searchable_percent:
+        status = SEARCHABLE
+        reason = f"{pct:.1f}% of the page content is searchable (required {searchable_percent:g}%)."
+    elif good_ratio < 0.35:
+        status = UNSEARCHABLE
+        reason = (f"Text layer is mostly garbage ({pct:.1f}% searchable) - "
+                  "bad OCR layer or broken font encoding.")
+    elif pct <= low_cut and good_words <= stamp_max_words:
+        status = PARTIAL
+        reason = (f"Only {good_words} word(s) are searchable (stamp/header/footer?) - "
+                  f"{pct:.1f}% searchable, the body has no usable text.")
+    elif pct <= low_cut:
+        status = PARTIAL
+        reason = (f"Text layer exists but covers only {pct:.1f}% of the content "
+                  "(misaligned or poor OCR layer) - verify with ocr_check=True.")
     else:
-        if raster_gap <= gap_ok:
-            if good_ratio >= 0.6:
-                status, reason = SEARCHABLE, "Scanned image with a text layer that covers the content."
-            else:
-                status, reason = PARTIAL, "Text layer covers the page but a large part of it is garbled."
-        elif raster_gap >= gap_bad:
-            if good_ratio < 0.35:
-                status, reason = (
-                    UNSEARCHABLE,
-                    "Text layer is mostly garbage and does not cover the scanned content (bad OCR layer).",
-                )
-            elif good_words <= stamp_max_words:
-                status, reason = (
-                    PARTIAL,
-                    f"Only {good_words} word(s) are searchable (stamp/header/footer?) - "
-                    "the scanned body has no usable text.",
-                )
-            else:
-                status, reason = (
-                    PARTIAL,
-                    "Text layer exists but does not line up with the scanned content "
-                    "(misaligned or poor OCR layer) - verify with ocr_check=True.",
-                )
-        else:
-            status, reason = (
-                PARTIAL,
-                f"About {raster_gap:.0%} of the scanned content has no matching searchable text.",
-            )
+        status = PARTIAL
+        reason = (f"{pct:.1f}% searchable, below the required {searchable_percent:g}% "
+                  f"({100 - pct:.1f}% of the content has no usable text).")
 
     # --- optional OCR cross-check (ground truth) ---
     if ocr_check:
@@ -352,25 +354,26 @@ def _analyze_page(
                 recall = matched / len(ocr_toks)
                 metrics["ocr_text_recall"] = round(recall, 3)
 
-                if recall >= 0.75 and good_ratio >= 0.6:
-                    status, reason = SEARCHABLE, "Text layer matches what OCR reads from the page image."
+                # OCR is the ground truth: its recall replaces the ink-based percentage
+                pct = 100.0 * recall
+                metrics["searchable_percent"] = round(pct, 2)
+                metrics["searchable_blocks"] = int(round(content_n * recall))
+
+                if pct >= searchable_percent:
+                    status = SEARCHABLE
+                    reason = f"Text layer matches {pct:.1f}% of what OCR reads from the page image."
                 elif recall >= 0.25:
-                    status, reason = (
-                        PARTIAL,
-                        f"Text layer only matches ~{recall:.0%} of what is visible on the page.",
-                    )
+                    status = PARTIAL
+                    reason = (f"Text layer only matches {pct:.1f}% of what is visible on the page "
+                              f"(required {searchable_percent:g}%).")
                 elif good_words <= stamp_max_words and good_ratio >= 0.6:
-                    status, reason = (
-                        PARTIAL,
-                        f"Only a small amount of text ({good_words} words, e.g. a stamp) is "
-                        f"searchable; body is image-only (text layer matches ~{recall:.0%}).",
-                    )
+                    status = PARTIAL
+                    reason = (f"Only a small amount of text ({good_words} words, e.g. a stamp) is "
+                              f"searchable; body is image-only (text layer matches {pct:.1f}%).")
                 else:
-                    status, reason = (
-                        UNSEARCHABLE,
-                        f"Text layer does not match the page image (only ~{recall:.0%} overlap "
-                        "with OCR) - bad / wrong OCR layer.",
-                    )
+                    status = UNSEARCHABLE
+                    reason = (f"Text layer does not match the page image (only {pct:.1f}% overlap "
+                              "with OCR) - bad / wrong OCR layer.")
             else:
                 metrics["ocr_check"] = "inconclusive (OCR found too few words)"
 
@@ -383,6 +386,7 @@ def _analyze_page(
 def check_pdf_searchability(
     pdf_path: str,
     page_numbers: PageSpec = None,
+    searchable_percent: float = 95.0,
     ocr_check: bool = False,
     ocr_lang: str = "eng",
     *,
@@ -390,7 +394,6 @@ def check_pdf_searchability(
     block: int = 8,
     min_ink_px: int = 3,
     min_image_area_ratio: float = 0.005,
-    gap_ok: float = 0.20,
     gap_bad: float = 0.80,
     stamp_max_words: int = 40,
 ) -> Dict:
@@ -399,24 +402,39 @@ def check_pdf_searchability(
 
     Parameters
     ----------
-    pdf_path      : path to the PDF.
-    page_numbers  : None / [] / ""  -> check the complete PDF (verdict for the whole file)
-                    int             -> single page, 1-based           e.g. 3
-                    list / tuple    -> selected pages                  e.g. [1, 4, 7]
-                    str             -> ranges                          e.g. "2-5,9"
-    ocr_check     : also OCR each page with Tesseract and compare with the embedded
-                    text layer. Slower, but catches "looks searchable but isn't" layers.
-    ocr_lang      : Tesseract language(s), e.g. "eng" or "eng+hin".
+    pdf_path           : path to the PDF.
+    page_numbers       : None / [] / ""  -> complete PDF (all pages combined)
+                         int             -> single page, 1-based           e.g. 1
+                         list / tuple    -> selected pages                  e.g. [1, 4, 7]
+                         str             -> ranges                          e.g. "2-5,9"
+    searchable_percent : how much of the content must be searchable, e.g. 95 means
+                         up to 5% may be unsearchable.
+                         * single page       -> applied to that page
+                         * None / many pages -> applied to ALL checked pages combined
+                           (pages are weighted by how much content they have, so one
+                           sparse page does not outweigh 50 dense ones)
+    ocr_check          : also OCR each page with Tesseract and use how much of the
+                         OCR text is found in the text layer as the percentage.
+                         Slower; catches "looks searchable but isn't" layers.
+                         (Tesseract itself is not perfect - with ocr_check you may
+                         want a slightly lower searchable_percent, e.g. 90.)
+    ocr_lang           : Tesseract language(s), e.g. "eng" or "eng+hin".
 
     Returns
     -------
     dict with:
-        status       : "searchable" | "partially_searchable" | "unsearchable" | "blank"
-                       (whole-PDF verdict when several pages are checked; blank pages ignored)
-        needs_ocr    : True if OCR is needed for the checked page(s)
-        summary      : {status: [page numbers]}
-        pages        : per-page list with status, reason and metrics
+        status              : "searchable" | "partially_searchable" | "unsearchable" | "blank"
+        searchable_percent  : measured % for the checked page(s)
+        unsearchable_percent: 100 - searchable_percent
+        required_percent    : the threshold you passed
+        needs_ocr           : True if status is partially_searchable / unsearchable
+        pages_below_threshold: pages whose own % is under the threshold
+        summary             : {status: [page numbers]}
+        pages               : per-page list with status, percentages, reason and metrics
     """
+    if not 0 < searchable_percent <= 100:
+        raise ValueError("searchable_percent must be between 0 and 100 (e.g. 95 for 95%).")
+
     with pymupdf.open(pdf_path) as doc:
         if doc.needs_pass:
             raise ValueError("PDF is password protected.")
@@ -426,9 +444,10 @@ def check_pdf_searchability(
         pages = [
             _analyze_page(
                 doc[i], i + 1,
+                searchable_percent=searchable_percent,
                 ocr_check=ocr_check, ocr_lang=ocr_lang, dpi=dpi, block=block,
                 min_ink_px=min_ink_px, min_image_area_ratio=min_image_area_ratio,
-                gap_ok=gap_ok, gap_bad=gap_bad, stamp_max_words=stamp_max_words,
+                gap_bad=gap_bad, stamp_max_words=stamp_max_words,
             )
             for i in indexes
         ]
@@ -437,12 +456,24 @@ def check_pdf_searchability(
     for p in pages:
         summary[p["status"]].append(p["page"])
 
-    real = {p["status"] for p in pages if p["status"] != BLANK}
+    real = [p for p in pages if p["status"] != BLANK]
+
+    # ---- combined percentage over every checked page (weighted by content) ----
+    if not real:
+        agg_pct = None
+    else:
+        content = sum(p["metrics"]["content_blocks"] for p in real)
+        covered = sum(p["metrics"]["searchable_blocks"] for p in real)
+        if content > 0:
+            agg_pct = 100.0 * covered / content
+        else:  # nothing measurable (e.g. only invisible text) -> plain average
+            agg_pct = sum(p["searchable_percent"] for p in real) / len(real)
+
     if not real:
         overall = BLANK
-    elif real == {SEARCHABLE}:
+    elif agg_pct >= searchable_percent:
         overall = SEARCHABLE
-    elif real == {UNSEARCHABLE}:
+    elif all(p["status"] == UNSEARCHABLE for p in real):
         overall = UNSEARCHABLE
     else:
         overall = PARTIAL
@@ -452,41 +483,20 @@ def check_pdf_searchability(
         "total_pages": total,
         "pages_checked": [p["page"] for p in pages],
         "status": overall,
+        "searchable_percent": None if agg_pct is None else round(agg_pct, 2),
+        "unsearchable_percent": None if agg_pct is None else round(100.0 - agg_pct, 2),
+        "required_percent": searchable_percent,
         "needs_ocr": overall in (PARTIAL, UNSEARCHABLE),
+        "pages_below_threshold": [p["page"] for p in real if p["searchable_percent"] < searchable_percent],
         "summary": summary,
         "pages": pages,
     }
 
 
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
-# def _main() -> None:
-#     ap = argparse.ArgumentParser(description="Check whether PDF pages are searchable.")
-#     ap.add_argument("pdf")
-#     ap.add_argument("--pages", help='e.g. "3", "1,4,7" or "2-5,9" (1-based). Default: all pages')
-#     ap.add_argument("--ocr-check", action="store_true", help="verify with Tesseract OCR (slower)")
-#     ap.add_argument("--lang", default="eng", help="Tesseract language, e.g. eng+hin")
-#     ap.add_argument("--json", action="store_true", help="print full JSON")
-#     args = ap.parse_args()
-
-#     res = check_pdf_searchability(args.pdf, args.pages, ocr_check=args.ocr_check, ocr_lang=args.lang)
-
-#     if args.json:
-#         json.dump(res, sys.stdout, indent=2)
-#         print()
-#         return
-
-#     print(f"File   : {res['file']}  ({res['total_pages']} pages)")
-#     print(f"Verdict: {res['status'].upper()}   (needs OCR: {res['needs_ocr']})")
-#     for status, nums in res["summary"].items():
-#         if nums:
-#             print(f"  {status:<22}: {nums}")
-#     print()
-#     for p in res["pages"]:
-#         print(f"  page {p['page']:>4} | {p['status']:<21} | {p['reason']}")
-
 
 if __name__ == "__main__":
-    result = check_pdf_searchability("/home/pankaj/projects/Agentic_Rag/20-1-43-016434.pdf",1)
-    print(result)
+    result = check_pdf_searchability("/home/pankaj/projects/Agentic_Rag/test.pdf", 1, 90)
+    print(result["status"], f"- {result['searchable_percent']}% searchable "
+          f"(required {result['required_percent']}%)")
+    for p in result["pages"]:
+        print(f"  page {p['page']}: {p['status']} | {p['searchable_percent']}% | {p['reason']}")
