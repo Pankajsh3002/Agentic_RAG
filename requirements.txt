@@ -6,4 +6,5 @@ ipykernel
 fastapi
 langchain_openai
 pymupdf
-pytesseract
+psycopg[binary]
+pgvector
