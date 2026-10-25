@@ -18,7 +18,7 @@ from Data_Ingestion.PDF_Markdown.Parse_PDF import parse_pdf_with_docling
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAX_WORKERS = 5
+DEFAULT_MAX_WORKERS = 3
 EXTRACTED_FILES_DIR = "/home/pankaj/projects/Agentic_Rag/Data_Ingestion/Extracted_Files"
 
 IMAGE_EXTENSIONS = {".tif", ".tiff", ".jpg", ".png", ".jpeg"}

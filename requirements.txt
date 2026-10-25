@@ -8,3 +8,6 @@ langchain_openai
 pymupdf
 psycopg[binary]
 pgvector
+fastapi
+uvicorn[standard]
+python-multipart
