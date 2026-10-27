@@ -10,9 +10,15 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import date
+import time
+
+from collections import defaultdict, deque
+
+from Agent.agent import MAX_QUESTION_CHARS, answer_question
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from Data_Ingestion.Markdown_Router import (  # adjust if your router lives elsewhere
@@ -22,8 +28,8 @@ from Data_Ingestion.Markdown_Router import (  # adjust if your router lives else
 from db.database import (
     begin_retry, create_workspace, delete_expired_workspaces, delete_workspace,
     get_document_markdown, get_document_status, get_summary, get_workspace,
-    list_documents, list_entities, list_events, list_relations, list_workspaces,
-    register_document,
+    list_documents, list_entities, list_events, list_relations, list_summaries,
+    list_workspaces, register_document,
 )
 from Pipeline.process_document import process_document, retry_failed_branches
 
@@ -64,6 +70,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Agentic RAG", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
 
 # ---------- anonymous session cookie ----------
@@ -250,3 +257,55 @@ def workspace_graph(
         "entities": list_entities(ws_id, doc, term),
         "relations": list_relations(ws_id, doc, term),
     }
+
+
+@app.get("/workspaces/{workspace_id}/summaries")
+def workspace_summaries(ws_id: str = Depends(owned_workspace)):
+    return list_summaries(ws_id)
+
+
+# ---------- chat (agent) ----------
+CHAT_LIMIT_PER_HOUR = int(os.getenv("CHAT_LIMIT_PER_HOUR", "30"))
+_chat_times: dict[str, deque] = defaultdict(deque)
+_chat_lock = threading.Lock()
+
+
+def _check_chat_rate(session_id: str) -> None:
+    """At most CHAT_LIMIT_PER_HOUR questions per visitor per hour."""
+    now = time.time()
+    with _chat_lock:
+        times = _chat_times[session_id]
+        while times and now - times[0] > 3600:
+            times.popleft()
+        if len(times) >= CHAT_LIMIT_PER_HOUR:
+            raise HTTPException(429, "Question limit reached for this hour. Please try again later.")
+        times.append(now)
+
+
+class ChatTurn(BaseModel):
+    role: str
+    content: str
+
+
+class ChatIn(BaseModel):
+    question: str
+    history: list[ChatTurn] = []
+
+
+@app.post("/workspaces/{workspace_id}/chat")
+def chat(body: ChatIn, ws_id: str = Depends(owned_workspace), sid: str = Depends(get_session_id)):
+    question = body.question.strip()
+    if not question:
+        raise HTTPException(400, "Type a question first.")
+    if len(question) > MAX_QUESTION_CHARS:
+        raise HTTPException(400, f"Questions can be at most {MAX_QUESTION_CHARS} characters.")
+    if not any(d["status"] == "done" for d in list_documents(ws_id)):
+        raise HTTPException(409, "No documents are ready yet. Upload a document and wait for processing to finish.")
+
+    _check_chat_rate(sid)
+    history = [{"role": t.role, "content": t.content} for t in body.history[-12:]]
+    try:
+        return answer_question(ws_id, question, history)
+    except Exception:
+        logger.exception("chat failed")
+        raise HTTPException(502, "The assistant could not answer right now. Please try again.")

@@ -65,7 +65,9 @@ def create_workspace(session_id: str, name: str) -> dict:
 def list_workspaces(session_id: str) -> list[dict]:
     return get_conn().execute(
         """
-        SELECT w.workspace_id, w.name, w.created_at, count(d.doc_id) AS documents
+        SELECT w.workspace_id, w.name, w.created_at,
+               count(d.doc_id) AS documents,
+               count(d.doc_id) FILTER (WHERE d.status = 'done') AS ready_documents
         FROM workspaces w LEFT JOIN documents d USING (workspace_id)
         WHERE w.session_id = %s
         GROUP BY w.workspace_id
@@ -74,7 +76,22 @@ def list_workspaces(session_id: str) -> list[dict]:
         (session_id,),
     ).fetchall()
 
-
+def list_summaries(workspace_id: str) -> list[dict]:
+    """Every document of a workspace with its summary (if any) and the summary step's state."""
+    return get_conn().execute(
+        """
+        SELECT d.doc_id, d.filename, d.status, d.created_at,
+               s.summary, s.model,
+               b.status AS summary_status, left(b.error, 200) AS summary_error
+        FROM documents d
+        LEFT JOIN summaries s ON s.doc_id = d.doc_id
+        LEFT JOIN document_branches b ON b.doc_id = d.doc_id AND b.branch = 'summary'
+        WHERE d.workspace_id = %s
+        ORDER BY d.created_at
+        """,
+        (workspace_id,),
+    ).fetchall()
+    
 def get_workspace(workspace_id: str, session_id: str) -> dict | None:
     """Return the workspace only if it belongs to this session, else None."""
     return get_conn().execute(

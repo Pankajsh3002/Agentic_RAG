@@ -11,3 +11,4 @@ pgvector
 fastapi
 uvicorn[standard]
 python-multipart
+langgraph
