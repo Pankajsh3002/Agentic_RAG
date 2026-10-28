@@ -26,13 +26,16 @@ _BRANCHES_SQL = """
 
 
 def get_conn() -> psycopg.Connection:
-    """One connection per thread, so parallel jobs never share a connection."""
+    """One connection per thread, so parallel jobs never share a connection.
+    A connection that was closed or broken (server restart, network drop) is replaced."""
     conn = getattr(_local, "conn", None)
-    if conn is None or conn.closed:
+    if conn is None or conn.closed or conn.broken:
         conn = psycopg.connect(
             os.environ["DATABASE_URL"],
             autocommit=True,
             row_factory=dict_row,
+            connect_timeout=10,
+            keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5,
         )
         _local.conn = conn
     return conn
@@ -324,6 +327,30 @@ def mark_done(doc_id: str) -> None:
         (doc_id,),
     )
 
+def fail_interrupted_documents() -> int:
+    """Jobs run inside the server process, so any pending or processing document found
+    when the server starts was cut off by a restart or crash. Mark it failed so it
+    does not look stuck."""
+    conn = get_conn()
+    with conn.transaction():
+        conn.execute(
+            """
+            UPDATE document_branches SET status = 'failed', error = 'Interrupted by a server restart'
+            WHERE status IN ('pending', 'running')
+              AND doc_id IN (SELECT doc_id FROM documents WHERE status IN ('pending', 'processing'))
+            """
+        )
+        rows = conn.execute(
+            """
+            UPDATE documents
+            SET status = 'failed', stage = COALESCE(stage, 'interrupted'),
+                error = 'Processing was interrupted (the server restarted or stopped). Upload the file again.',
+                updated_at = now()
+            WHERE status IN ('pending', 'processing')
+            RETURNING doc_id
+            """
+        ).fetchall()
+    return len(rows)
 
 # ---------------- chunks and search ----------------
 def save_chunks(doc_id: str, chunks: list[dict], vectors: list[list[float]]) -> None:

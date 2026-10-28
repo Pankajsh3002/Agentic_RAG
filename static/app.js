@@ -8,6 +8,9 @@
     workspaces: "Workspace", ask: "Query Document", summary: "Summary",
     timeline: "Timelines", connections: "Connections",
   };
+  const STEP_ORDER = ["chunks", "summary", "events", "graph"];
+  const STEP_LABELS = { chunks: "Text index", summary: "Summary", events: "Key dates", graph: "Connections" };
+  const STATUS_LABELS = { done: "Ready for query", pending: "Waiting", processing: "Processing", failed: "Failed" };
 
   // Icon shapes (24x24 outline icons). These are fixed constants, never user data.
   const ICONS = {
@@ -24,6 +27,7 @@
     check: '<polyline points="20 6 9 17 4 12"/>',
     alert: '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
     shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/>',
+    send: '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>',
   };
 
   const state = {
@@ -239,7 +243,7 @@
       sel.value = state.wsId || "";
     }
     const ws = currentWs();
-    $("wsMeta").textContent = ws ? ws.ready_documents + " of " + ws.documents + " file(s) ready to query" : "";
+    $("wsMeta").textContent = ws ? ws.ready_documents + " of " + ws.documents + " file(s) ready for query" : "";
     $("askDot").classList.toggle("hidden", !(ws && ws.ready_documents > 0));
   }
 
@@ -275,7 +279,7 @@
       const info = el("div", "", "grow");
       info.append(
         el("div", w.name, "ws-name"),
-        el("div", w.documents + " file(s), " + w.ready_documents + " ready", "muted small")
+        el("div", w.documents + " file(s), " + w.ready_documents + " ready for query", "muted small")
       );
 
       const actions = el("div", "", "ws-actions");
@@ -358,7 +362,7 @@
     const row = el("div", "", "doc-row");
     const top = el("div", "", "doc-top");
     top.append(icon("file", 16), el("span", d.filename, "doc-name"),
-               el("span", d.status, "small st-" + d.status));
+               el("span", STATUS_LABELS[d.status] || d.status, "pill pill-" + d.status));
 
     const actions = el("span", "", "doc-actions");
     const showingMd = state.md && state.md.docId === d.doc_id;
@@ -376,11 +380,12 @@
     top.appendChild(actions);
     row.appendChild(top);
 
-    const entries = Object.entries(d.branches || {});
+    const entries = Object.entries(d.branches || {})
+      .sort((a, b) => STEP_ORDER.indexOf(a[0]) - STEP_ORDER.indexOf(b[0]));
     if (entries.length) {
       const steps = el("div", "", "doc-steps");
       entries.forEach(([name, b]) => {
-        const chip = el("span", name + ": " + b.status, "step st-" + b.status);
+        const chip = el("span", (STEP_LABELS[name] || name) + ": " + b.status, "step st-" + b.status);
         if (b.error) chip.title = b.error;
         steps.appendChild(chip);
       });
@@ -460,8 +465,7 @@
     await loadDocs();
   }
 
-  // ---------- query document (placeholder until the agent exists) ----------
-    // ---------- query document ----------
+  // ---------- query document ----------
   const STARTERS = [
     "What is each document about?",
     "What are the key dates and deadlines?",
@@ -482,27 +486,47 @@
     else updateAskControls();
   }
 
+  function autoGrow(input) {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 160) + "px";
+  }
+
   function buildAskShell(box, wsId) {
     box.replaceChildren();
-    const status = el("p", "", "small");
+    const col = el("div", "", "chat-col");
+
+    const top = el("div", "", "chat-top");
+    const status = el("span", "", "small");
     status.id = "askStatus";
+    const clear = el("button", "Clear chat", "btn-sm");
+    clear.id = "chatClear";
+    clear.onclick = () => clearChat();
+    top.append(status, clear);
+
     const log = el("div", "", "chat-log");
     log.id = "chatLog";
 
-    const form = el("div", "", "chat-form");
+    const composer = el("div", "", "composer");
     const input = document.createElement("textarea");
     input.id = "chatInput";
-    input.rows = 2;
+    input.rows = 1;
     input.maxLength = 500;
+    input.addEventListener("input", () => autoGrow(input));
     input.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); guard(submitChat)(); }
     });
-    const send = el("button", "Send", "primary");
+    const send = el("button", "", "primary send");
     send.id = "chatSend";
+    send.setAttribute("aria-label", "Send question");
+    send.append(icon("send", 16), document.createTextNode("Send"));
     send.onclick = guard(submitChat);
-    form.append(input, send);
+    composer.append(input, send);
 
-    box.append(status, log, form);
+    const hint = el("p", "Answers come only from this workspace's documents. Enter sends, Shift+Enter adds a new line.",
+                    "muted small chat-hint");
+
+    col.append(top, log, composer, hint);
+    box.appendChild(col);
     state.askBuiltFor = wsId;
     renderChat();
   }
@@ -514,12 +538,13 @@
     const ready = ws.ready_documents > 0;
     const status = $("askStatus");
     status.textContent = ready
-      ? ws.ready_documents + " of " + ws.documents + " file(s) ready to query."
+      ? ws.ready_documents + " of " + ws.documents + " file(s) ready for query"
       : "Upload a document and wait for processing to finish. Then you can ask questions here.";
     status.className = "small " + (ready ? "ok" : "muted");
     input.disabled = !ready || chat.busy;
     $("chatSend").disabled = !ready || chat.busy;
-    input.placeholder = ready ? "Ask a question about this workspace's documents (Enter to send)"
+    $("chatClear").classList.toggle("hidden", !chat.messages.length || chat.busy);
+    input.placeholder = ready ? "Ask a question about this workspace's documents"
                               : "Waiting for a document to finish processing";
   }
 
@@ -528,23 +553,43 @@
     if (!ws || !log) return;
     const chat = chatFor(ws.workspace_id);
     log.replaceChildren();
+
     if (!chat.messages.length) {
-      log.appendChild(el("p", "Try one of these, or type your own question:", "muted small"));
-      const row = el("div", "", "chips");
+      const empty = el("div", "", "chat-empty");
+      empty.append(
+        el("h3", "Ask about your documents"),
+        el("p", "Answers are checked against the documents and come with their sources.", "muted small")
+      );
+      const row = el("div", "", "chips center");
       STARTERS.forEach((q) => {
         const b = el("button", q, "chip");
         b.onclick = guard(() => sendQuestion(q));
         row.appendChild(b);
       });
-      log.appendChild(row);
+      empty.appendChild(row);
+      log.appendChild(empty);
     }
+
     chat.messages.forEach((m) => log.appendChild(messageEl(m)));
     if (chat.busy) log.appendChild(el("div", "Searching your documents...", "msg assistant thinking"));
     updateAskControls();
-    log.scrollTop = log.scrollHeight;
+
+    // After an answer arrives, show its beginning. While waiting, stay at the bottom.
+    const last = log.lastElementChild;
+    if (!chat.busy && last && last.classList.contains("assistant")) log.scrollTop = Math.max(0, last.offsetTop - 8);
+    else log.scrollTop = log.scrollHeight;
   }
 
-    function messageEl(m) {
+  function clearChat() {
+    const ws = currentWs();
+    if (!ws) return;
+    const chat = chatFor(ws.workspace_id);
+    if (chat.busy) return;
+    chat.messages = [];
+    renderChat();
+  }
+
+  function messageEl(m) {
     if (m.role === "user") return el("div", m.text, "msg user");
     const box = el("div", "", "msg assistant" + (m.error ? " error-msg" : ""));
     box.appendChild(el("div", m.text, "msg-text"));
@@ -644,6 +689,7 @@
     if (!input || input.disabled) return;
     const text = input.value;
     input.value = "";
+    autoGrow(input);
     await sendQuestion(text);
   }
 
@@ -668,7 +714,7 @@
         body: JSON.stringify({ question: q, history }),
       });
       chat.messages.push({ role: "assistant", text: data.answer, steps: data.steps || [],
-                    verification: data.verification || null });
+                           verification: data.verification || null });
     } catch (e) {
       chat.messages.push({ role: "assistant", text: e.message, error: true });
     } finally {

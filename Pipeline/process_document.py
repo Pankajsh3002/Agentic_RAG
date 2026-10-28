@@ -1,6 +1,9 @@
 import logging
+import os
 import shutil
 import tempfile
+import threading
+import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -14,9 +17,14 @@ from db.database import (
 
 logger = logging.getLogger(__name__)
 
+# Docling uses a lot of memory, so only this many documents are parsed at the same time.
+# The model-calling branches are not limited by this.
+_PARSE_SLOTS = threading.Semaphore(int(os.getenv("PARSE_CONCURRENCY", "1")))
+
 
 def _run_branch(name: str, doc_id: str, markdown: str) -> tuple[str, str | None]:
     """Run one branch in its own thread. Returns (branch name, error message or None)."""
+    started = time.monotonic()
     try:
         set_branch(doc_id, name, "running")
         BRANCHES[name](doc_id, markdown)
@@ -27,6 +35,7 @@ def _run_branch(name: str, doc_id: str, markdown: str) -> tuple[str, str | None]
         set_branch(doc_id, name, "failed", str(e)[:2000], traceback.format_exc()[-8000:])
         return name, str(e)
     finally:
+        logger.info("doc_id=%s branch '%s' took %.1f s", doc_id, name, time.monotonic() - started)
         close_conn()   # each worker thread has its own connection
 
 
@@ -36,9 +45,12 @@ def process_document(local_path: str, doc_id: str, max_workers: int = 5) -> bool
     try:
         set_status(doc_id, "processing")
 
-        stage = "parsing"
+        stage = "queued"
         set_stage(doc_id, stage)
-        markdown = route_document(local_path, extracted_dir=extracted_dir, max_workers=max_workers)
+        with _PARSE_SLOTS:                       # waits here if another document is being parsed
+            stage = "parsing"
+            set_stage(doc_id, stage)
+            markdown = route_document(local_path, extracted_dir=extracted_dir, max_workers=max_workers)
 
         # Some parsers resolve relative links against the temp upload folder; strip that prefix
         base = str(Path(local_path).resolve().parent)
@@ -61,8 +73,10 @@ def process_document(local_path: str, doc_id: str, max_workers: int = 5) -> bool
             set_branch(doc_id, name, "pending")
 
         # All branches run at the same time, each in its own thread
+        branches_started = time.monotonic()
         with ThreadPoolExecutor(max_workers=len(BRANCHES)) as pool:
             results = list(pool.map(lambda n: _run_branch(n, doc_id, markdown), BRANCHES))
+        logger.info("doc_id=%s all branches finished in %.1f s", doc_id, time.monotonic() - branches_started)
 
         failed = [name for name, err in results if err]
         essential_failed = [n for n in failed if n in ESSENTIAL]
@@ -79,6 +93,7 @@ def process_document(local_path: str, doc_id: str, max_workers: int = 5) -> bool
         return False
     finally:
         shutil.rmtree(extracted_dir, ignore_errors=True)
+
 
 def retry_failed_branches(doc_id: str) -> bool:
     """
@@ -107,6 +122,7 @@ def retry_failed_branches(doc_id: str) -> bool:
         logger.exception("doc_id=%s retry failed", doc_id)
         set_failed(doc_id, stage, str(e)[:2000], traceback.format_exc()[-8000:])
         return False
+
 
 if __name__ == "__main__":
     # Debug run: python3 -m Pipeline.process_document <path-to-file>

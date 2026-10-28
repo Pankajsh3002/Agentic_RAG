@@ -27,7 +27,7 @@ from Data_Ingestion.Markdown_Router import (  # adjust if your router lives else
 )
 from db.database import (
     begin_retry, create_workspace, delete_expired_workspaces, delete_workspace,
-    get_document_markdown, get_document_status, get_summary, get_workspace,
+    fail_interrupted_documents, get_document_markdown, get_document_status, get_summary, get_workspace,
     list_documents, list_entities, list_events, list_relations, list_summaries,
     list_workspaces, register_document,
 )
@@ -47,7 +47,7 @@ SESSION_MAX_AGE = 7 * 24 * 3600
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "0") == "1"   # set to 1 when served over HTTPS
 
 # Docling is heavy, so allow at most 2 documents to be parsed at once locally.
-_parse_slots = threading.Semaphore(2)
+_PARSE_SLOTS = threading.Semaphore(int(os.getenv("PARSE_CONCURRENCY", "1")))
 
 
 # ---------- background cleanup of expired workspaces ----------
@@ -64,6 +64,13 @@ async def _expiry_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Lifespan context manager for the FastAPI app."""
+    try:
+        n = await asyncio.to_thread(fail_interrupted_documents)
+        if n:
+            logger.warning("Marked %d interrupted document(s) as failed", n)
+    except Exception:
+        logger.exception("Could not check for interrupted documents")
     task = asyncio.create_task(_expiry_loop())
     yield
     task.cancel()
@@ -105,8 +112,7 @@ def owned_workspace(workspace_id: uuid.UUID, sid: str = Depends(get_session_id))
 # ---------- pipeline job ----------
 def _run_pipeline(local_path: str, upload_dir: str, doc_id: str) -> None:
     """Background job: parse, store, then delete the upload only on success."""
-    with _parse_slots:
-        ok = process_document(local_path, doc_id)
+    ok = process_document(local_path, doc_id)
     if ok:
         shutil.rmtree(upload_dir, ignore_errors=True)
     else:
