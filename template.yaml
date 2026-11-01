@@ -1,0 +1,107 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Agentic RAG - stage 3 - upload bucket and parser worker
+
+Parameters:
+  DbHost:
+    Type: String
+    Description: Aurora host name (the host= value from the RDS console snippet)
+  DbName:
+    Type: String
+    Default: postgres
+  DbUser:
+    Type: String
+    Default: postgres
+  MainModel:
+    Type: String
+    Description: Chat model for summary, events and graph (same as MAIN_MODEL in your .env)
+  EmbedModel:
+    Type: String
+    Default: google/gemini-embedding-2
+  EmbedDim:
+    Type: String
+    Default: "3072"
+  WorkerMemory:
+    Type: Number
+    Default: 3008
+
+Resources:
+  UploadsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub agentic-rag-uploads-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: delete-uploads-after-one-day
+            Status: Enabled
+            Prefix: uploads/
+            ExpirationInDays: 1
+
+  WorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 14
+
+  WorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      MemorySize: !Ref WorkerMemory
+      Timeout: 900
+      EphemeralStorage:
+        Size: 4096
+      LoggingConfig:
+        LogGroup: !Ref WorkerLogGroup
+      Environment:
+        Variables:
+          HOME: /tmp
+          HF_HUB_OFFLINE: "1"
+          DB_HOST: !Ref DbHost
+          DB_NAME: !Ref DbName
+          DB_USER: !Ref DbUser
+          OPENROUTER_API_KEY_PARAM: /agentic-rag/openrouter-api-key
+          MAIN_MODEL: !Ref MainModel
+          EMBED_MODEL: !Ref EmbedModel
+          EMBED_DIM: !Ref EmbedDim
+          PARSE_CONCURRENCY: "1"
+          PARSE_WORKERS: "1"
+          # Add other non-secret settings from your .env here, one per line. Never put secrets here.
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:DeleteObject
+              Resource: !Sub arn:aws:s3:::agentic-rag-uploads-${AWS::AccountId}-${AWS::Region}/*
+            - Effect: Allow
+              Action: rds-db:connect
+              Resource: !Sub arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:*/${DbUser}
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentic-rag/*
+      Events:
+        UploadCreated:
+          Type: S3
+          Properties:
+            Bucket: !Ref UploadsBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: uploads/
+    Metadata:
+      Dockerfile: worker/Dockerfile
+      DockerContext: .
+      DockerTag: latest
+
+Outputs:
+  UploadsBucketName:
+    Value: !Ref UploadsBucket
+  WorkerFunctionName:
+    Value: !Ref WorkerFunction

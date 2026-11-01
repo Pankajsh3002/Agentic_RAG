@@ -1,6 +1,7 @@
 import os
 import threading
 import json
+import time
 
 import psycopg
 from dotenv import load_dotenv
@@ -25,18 +26,46 @@ _BRANCHES_SQL = """
 """
 
 
+def _connect_kwargs() -> dict:
+    return dict(
+        autocommit=True, row_factory=dict_row, connect_timeout=30,
+        keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5,
+    )
+
+
+def _open_connection() -> psycopg.Connection:
+    host = os.getenv("DB_HOST")
+    if not host:                                   # local Docker database
+        return psycopg.connect(os.environ["DATABASE_URL"], **_connect_kwargs())
+
+    import boto3                                    # AWS database: log in with an IAM token
+    region = os.getenv("DB_REGION") or os.environ["AWS_REGION"]
+    user = os.getenv("DB_USER", "postgres")
+    port = int(os.getenv("DB_PORT", "5432"))
+    token = boto3.client("rds", region_name=region).generate_db_auth_token(
+        DBHostname=host, Port=port, DBUsername=user, Region=region
+    )
+    return psycopg.connect(
+        host=host, port=port, dbname=os.getenv("DB_NAME", "postgres"),
+        user=user, password=token, sslmode="require", **_connect_kwargs(),
+    )
+
+
 def get_conn() -> psycopg.Connection:
-    """One connection per thread, so parallel jobs never share a connection.
-    A connection that was closed or broken (server restart, network drop) is replaced."""
+    """One connection per thread. A closed or broken connection is replaced, and a few
+    attempts are made because Aurora can take a while to wake up from zero capacity."""
     conn = getattr(_local, "conn", None)
     if conn is None or conn.closed or conn.broken:
-        conn = psycopg.connect(
-            os.environ["DATABASE_URL"],
-            autocommit=True,
-            row_factory=dict_row,
-            connect_timeout=10,
-            keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5,
-        )
+        last_error = None
+        for attempt in range(3):
+            try:
+                conn = _open_connection()
+                break
+            except psycopg.OperationalError as e:
+                last_error = e
+                time.sleep(3 * (attempt + 1))
+        else:
+            raise last_error
         _local.conn = conn
     return conn
 
@@ -578,6 +607,14 @@ def list_relations(workspace_id: str, doc_id: str | None = None, term: str | Non
         """,
         (workspace_id, doc_id, doc_id, pattern, pattern, pattern, limit),
     ).fetchall()
+
+
+def get_upload_target(doc_id: str) -> dict | None:
+    """What the worker needs to know about the document it was asked to process."""
+    return get_conn().execute(
+        "SELECT workspace_id, content_hash, status FROM documents WHERE doc_id = %s",
+        (doc_id,),
+    ).fetchone()
 
 if __name__ == "__main__":
     # Isolation self-test: python3 -m db.database   (run from the project root)

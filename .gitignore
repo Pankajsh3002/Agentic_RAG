@@ -7,3 +7,51 @@ __pychache__/
 *.pdf
 *.htm
 *.html
+
+# --- Secrets and local settings (never commit these) ---
+.env
+.env.*
+!.env.example
+samconfig.toml
+samconfig.*.toml
+*.pem
+*.key
+
+# --- Python ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- AWS SAM build output ---
+.aws-sam/
+
+# --- Test and personal files in the project root ---
+/*.pdf
+/*.doc
+/*.docx
+/*.htm
+/*.html
+/*.xlsx
+/*.xls
+/*.csv
+/*.eml
+/*.png
+/*.jpg
+/*.jpeg
+jar-*.txt
+
+# --- Generated data ---
+Data_Ingestion/Extracted_Files/
+Evals/last_report.json
+
+# --- Editors, OS, logs ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
