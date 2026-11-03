@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 from Pipeline.extraction import (
     MAX_TOTAL_CHARS, RULES, ask_json, clean_text, norm, normalize_key, quote_in_doc, split_windows,
@@ -86,11 +87,15 @@ def run(doc_id: str, markdown: str) -> None:
     relations: dict[tuple, dict] = {}
     dropped = 0
 
-    for window in split_windows(text):
+    windows = split_windows(text)
+    def _fetch_window(window: str) -> dict:
         prompt = PROMPT.replace("<<RULES>>", RULES).replace("<<TEXT>>", window)
-        data = ask_json(prompt, model, MAX_TOKENS)
-        raw_outputs.append(data)
+        return ask_json(prompt, model, MAX_TOKENS)
 
+    with ThreadPoolExecutor(max_workers=min(len(windows), 4) if windows else 1) as pool:
+        raw_outputs = list(pool.map(_fetch_window, windows))
+
+    for data in raw_outputs:
         raw_entities, raw_relations = data.get("entities"), data.get("relations")
         if not isinstance(raw_entities, list) or not isinstance(raw_relations, list):
             raise ValueError('The model output must contain "entities" and "relations" lists')

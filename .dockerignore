@@ -5,11 +5,8 @@
 **/__pycache__
 **/*.pyc
 .aws-sam
-static
 Evals
-Agent
 *.pdf
 *.docx
-*.htm
-*.html
+sample2.html
 jar-*.txt

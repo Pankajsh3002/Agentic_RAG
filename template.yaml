@@ -47,6 +47,7 @@ Resources:
           - AllowedOrigins:
               - http://127.0.0.1:8000
               - http://localhost:8000
+              - "*"
             AllowedMethods:
               - POST
             AllowedHeaders:
@@ -80,7 +81,7 @@ Resources:
           EMBED_MODEL: !Ref EmbedModel
           EMBED_DIM: !Ref EmbedDim
           PARSE_CONCURRENCY: "1"
-          PARSE_WORKERS: "1"
+          PARSE_WORKERS: "4"
           # Add other non-secret settings from your .env here, one per line. Never put secrets here.
       Policies:
         - Statement:
@@ -111,8 +112,58 @@ Resources:
       DockerContext: .
       DockerTag: latest
 
+  WebLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 14
+
+  WebFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      MemorySize: 1024
+      Timeout: 60
+      ImageConfig:
+        Command:
+          - main.handler
+      LoggingConfig:
+        LogGroup: !Ref WebLogGroup
+      FunctionUrlConfig:
+        AuthType: NONE
+      Environment:
+        Variables:
+          DB_HOST: !Ref DbHost
+          DB_NAME: !Ref DbName
+          DB_USER: !Ref DbUser
+          UPLOAD_BUCKET: !Ref UploadsBucket
+          OPENROUTER_API_KEY_PARAM: /agentic-rag/openrouter-api-key
+          MAIN_MODEL: !Ref MainModel
+          EMBED_MODEL: !Ref EmbedModel
+          EMBED_DIM: !Ref EmbedDim
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: rds-db:connect
+              Resource: !Sub arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:*/${DbUser}
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentic-rag/*
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+                - s3:GetObject
+                - s3:DeleteObject
+              Resource: !Sub arn:aws:s3:::agentic-rag-uploads-${AWS::AccountId}-${AWS::Region}/*
+    Metadata:
+      Dockerfile: worker/Dockerfile
+      DockerContext: .
+      DockerTag: latest
+
 Outputs:
   UploadsBucketName:
     Value: !Ref UploadsBucket
   WorkerFunctionName:
     Value: !Ref WorkerFunction
+  WebUrl:
+    Description: Public URL for your Agentic RAG website
+    Value: !GetAtt WebFunctionUrl.FunctionUrl

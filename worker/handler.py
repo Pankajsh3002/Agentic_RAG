@@ -19,6 +19,18 @@ WATCHDOG_MARGIN_S = 45          # report a timeout this long before Lambda would
 _s3 = None
 
 
+def _background_warmup():
+    try:
+        from Data_Ingestion.PDF_Markdown.Parse_PDF import _get_converter
+        _get_converter()
+    except Exception as e:
+        logger.warning("Background converter pre-warmup failed: %s", e)
+
+
+# Trigger pre-warmup during Lambda container init so model weights load into RAM before events arrive
+threading.Thread(target=_background_warmup, daemon=True).start()
+
+
 def _client():
     global _s3
     if _s3 is None:
@@ -67,9 +79,9 @@ def _start_watchdog(doc_id: str, seconds: float) -> threading.Timer:
 
 
 def _process_object(bucket: str, key: str, remaining_ms: int) -> None:
-    # Imported here, not at the top: these imports are slow and heavy
-    from Pipeline.process_document import process_document
-    from db.database import close_conn, get_upload_target, set_failed
+    from db.database import (
+        close_conn, get_upload_target, set_failed, set_stage, set_status,
+    )
 
     parts = key.split("/")                      # uploads/<workspace_id>/<doc_id>/<filename>
     if len(parts) != 4 or parts[0] != "uploads":
@@ -91,6 +103,10 @@ def _process_object(bucket: str, key: str, remaining_ms: int) -> None:
             s3.delete_object(Bucket=bucket, Key=key)
             return
 
+        # Immediately update status so UI reflects processing without delay
+        set_status(doc_id, "processing")
+        set_stage(doc_id, "downloading")
+
         local_path = os.path.join(work_dir, filename)
         s3.download_file(bucket, key, local_path)
 
@@ -108,7 +124,10 @@ def _process_object(bucket: str, key: str, remaining_ms: int) -> None:
                 return
 
         watchdog = _start_watchdog(doc_id, max(30.0, remaining_ms / 1000 - WATCHDOG_MARGIN_S))
-        ok = process_document(local_path, doc_id, max_workers=int(os.getenv("PARSE_WORKERS", "1")))
+
+        # Import heavy ML pipeline only after DB connection & download are validated
+        from Pipeline.process_document import process_document
+        ok = process_document(local_path, doc_id, max_workers=int(os.getenv("PARSE_WORKERS", "4")))
         if ok:
             s3.delete_object(Bucket=bucket, Key=key)   # keep the file if it failed, so it can be inspected
     except Exception as e:

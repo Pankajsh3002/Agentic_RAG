@@ -1,5 +1,6 @@
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
 from Pipeline.extraction import (
@@ -104,11 +105,15 @@ def run(doc_id: str, markdown: str) -> None:
     seen: set[tuple] = set()
     dropped = 0
 
-    for window in split_windows(text):
+    windows = split_windows(text)
+    def _fetch_window(window: str) -> dict:
         prompt = PROMPT.replace("<<RULES>>", RULES).replace("<<TEXT>>", window)
-        data = ask_json(prompt, model, MAX_TOKENS)
-        raw_outputs.append(data)
+        return ask_json(prompt, model, MAX_TOKENS)
 
+    with ThreadPoolExecutor(max_workers=min(len(windows), 4) if windows else 1) as pool:
+        raw_outputs = list(pool.map(_fetch_window, windows))
+
+    for data in raw_outputs:
         items = data.get("events")
         if not isinstance(items, list):
             raise ValueError('The model output has no "events" list')

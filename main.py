@@ -21,21 +21,22 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from Data_Ingestion.Markdown_Router import (  # adjust if your router lives elsewhere
-    DOCX_EXTENSIONS, HTML_EXTENSIONS, IMAGE_EXTENSIONS,
-    MAIL_EXTENSIONS, PDF_EXTENSIONS, TABULAR_EXTENSIONS,
-)
 from db.database import (
     abort_pending_upload, begin_retry, create_workspace, delete_expired_workspaces, delete_workspace,
     fail_interrupted_documents, get_document_markdown, get_document_status, get_summary, get_workspace,
     list_documents, list_entities, list_events, list_relations, list_summaries,
     list_workspaces, register_document, set_failed,
 )
-from Pipeline.process_document import process_document, retry_failed_branches
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+IMAGE_EXTENSIONS = {".tif", ".tiff", ".jpg", ".png", ".jpeg"}
+HTML_EXTENSIONS = {".html", ".htm"}
+MAIL_EXTENSIONS = {".eml", ".msg", ".xml"}
+TABULAR_EXTENSIONS = {".xlsx", ".xls", ".csv", ".tsv"}
+DOCX_EXTENSIONS = {".docx", ".doc"}
+PDF_EXTENSIONS = {".pdf"}
 ALLOWED_EXTENSIONS = (
     IMAGE_EXTENSIONS | HTML_EXTENSIONS | MAIL_EXTENSIONS
     | TABULAR_EXTENSIONS | DOCX_EXTENSIONS | PDF_EXTENSIONS
@@ -64,9 +65,24 @@ async def _expiry_loop():
         await asyncio.sleep(3600)
 
 
+def _preload_local_parser():
+    """In local mode, warm up the parser in the background so uploads parse without delay."""
+    try:
+        from Pipeline.process_document import process_document  # noqa: F401
+        logger.info("Local document parser warmed up in background thread.")
+    except Exception:
+        pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for the FastAPI app."""
+    try:
+        from aws_secrets import load_secrets
+        load_secrets()
+    except Exception:
+        pass
+
     if not UPLOAD_BUCKET:    # with direct uploads, the cloud worker owns running jobs, not this server
         try:
             n = await asyncio.to_thread(fail_interrupted_documents)
@@ -74,6 +90,8 @@ async def lifespan(app: FastAPI):
                 logger.warning("Marked %d interrupted document(s) as failed", n)
         except Exception:
             logger.exception("Could not check for interrupted documents")
+        threading.Thread(target=_preload_local_parser, daemon=True).start()
+
     task = asyncio.create_task(_expiry_loop())
     yield
     task.cancel()
@@ -81,6 +99,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Agentic RAG", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
+
+
+# ---------- database connection auto-cleanup (allows Aurora to auto-pause) ----------
+@app.middleware("http")
+async def db_cleanup_middleware(request: Request, call_next):
+    try:
+        return await call_next(request)
+    finally:
+        from db.database import close_conn
+        close_conn()
 
 
 # ---------- anonymous session cookie ----------
@@ -115,6 +143,7 @@ def owned_workspace(workspace_id: uuid.UUID, sid: str = Depends(get_session_id))
 # ---------- pipeline job ----------
 def _run_pipeline(local_path: str, upload_dir: str, doc_id: str) -> None:
     """Background job: parse, store, then delete the upload only on success."""
+    from Pipeline.process_document import process_document
     ok = process_document(local_path, doc_id)
     if ok:
         shutil.rmtree(upload_dir, ignore_errors=True)
@@ -242,6 +271,7 @@ def retry_document(
 ):
     if not begin_retry(str(doc_id), ws_id):
         raise HTTPException(409, "Nothing to retry, or the document is still being processed")
+    from Pipeline.process_document import retry_failed_branches
     background_tasks.add_task(retry_failed_branches, str(doc_id))
     return {"doc_id": str(doc_id), "status": "processing"}
 
@@ -391,3 +421,8 @@ def init_upload(body: UploadInit, ws_id: str = Depends(owned_workspace)):
 @app.delete("/workspaces/{workspace_id}/uploads/{doc_id}")
 def abort_upload(doc_id: uuid.UUID, ws_id: str = Depends(owned_workspace)):
     return {"removed": abort_pending_upload(str(doc_id), ws_id)}
+
+
+# ---------- AWS Lambda handler (ASGI adapter) ----------
+from mangum import Mangum
+handler = Mangum(app)

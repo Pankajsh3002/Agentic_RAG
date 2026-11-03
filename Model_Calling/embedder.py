@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_DIMENSIONS = 3072   # must match halfvec(3072) in the database
-MAX_PARALLEL = 5            # simultaneous requests (one text per request)
+MAX_PARALLEL = int(os.getenv("EMBED_MAX_PARALLEL", "8"))
 
 
 # ---------- embedding wrapper ----------

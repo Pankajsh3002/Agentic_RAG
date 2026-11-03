@@ -15,10 +15,11 @@ from Data_Ingestion.Mail_Markdown.Parse_Mail import parse_email_with_docling
 from Data_Ingestion.Excel_Markdown.Parse_CSV_Excel import parse_tabular_file
 from Data_Ingestion.PDF_Markdown.Docx_to_PDF_Conversion import convert_docx_to_pdf
 from Data_Ingestion.PDF_Markdown.Parse_PDF import parse_pdf_with_docling
+from Data_Ingestion.PDF_Markdown.Pdf_Searchability import check_pdf_searchability
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAX_WORKERS = 3
+DEFAULT_MAX_WORKERS = int(os.getenv("PARSE_WORKERS", "4"))
 EXTRACTED_FILES_DIR = os.getenv("EXTRACTED_FILES_DIR", str(Path(PROJECT_ROOT) / "Data_Ingestion" / "Extracted_Files"))
 
 IMAGE_EXTENSIONS = {".tif", ".tiff", ".jpg", ".png", ".jpeg"}
@@ -117,8 +118,32 @@ def _route_single_file(
 
     # 6. PDF files (.pdf)
     if ext in PDF_EXTENSIONS:
-        logger.info("Routing PDF file '%s' -> parse_pdf_with_docling", file_path)
-        return parse_pdf_with_docling(file_path, max_workers=max_workers)
+        try:
+            search_result = check_pdf_searchability(file_path, searchable_percent=90)
+            status = search_result.get("status")
+            logger.info(
+                "PDF searchability for '%s': %s (searchable_percent: %s%%)",
+                file_path,
+                status,
+                search_result.get("searchable_percent"),
+            )
+            if status == "searchable":
+                logger.info("Routing searchable PDF '%s' -> parse_pdf_with_docling", file_path)
+                return parse_pdf_with_docling(file_path, max_workers=max_workers)
+            else:
+                logger.info(
+                    "Routing unsearchable/partial PDF '%s' (status: %s) -> parse_image_with_llm",
+                    file_path,
+                    status,
+                )
+                return parse_image_with_llm(file_path, max_workers=max_workers)
+        except Exception as e:
+            logger.warning(
+                "Error checking PDF searchability for '%s' (%s), defaulting to parse_pdf_with_docling",
+                file_path,
+                e,
+            )
+            return parse_pdf_with_docling(file_path, max_workers=max_workers)
 
     raise ValueError(f"Unsupported file format '{ext}' for file: {file_path}")
 

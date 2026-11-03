@@ -31,6 +31,9 @@ COPY aws_secrets.py ./
 COPY db ./db
 COPY Pipeline ./Pipeline
 COPY worker ./worker
+COPY Agent ./Agent
+COPY static ./static
+COPY main.py ./
 
 ENTRYPOINT ["/usr/local/bin/python", "-m", "awslambdaric"]
 CMD ["worker.handler.lambda_handler"]

@@ -1,5 +1,6 @@
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 from Model_Calling.Model_Service import invoke_llm
 from Pipeline.chunker import _pack as split_text
@@ -73,7 +74,8 @@ def run(doc_id: str, markdown: str) -> None:
         summary = _ask(FINAL_PROMPT.format(rules=RULES, text=text), model)
     else:
         parts = split_text(text, PART_CHARS)
-        part_summaries = [_ask(PART_PROMPT.format(rules=RULES, text=p), model) for p in parts]
+        with ThreadPoolExecutor(max_workers=min(len(parts), 4) if parts else 1) as pool:
+            part_summaries = list(pool.map(lambda p: _ask(PART_PROMPT.format(rules=RULES, text=p), model), parts))
         joined = "\n\n".join(f"Part {i}: {s}" for i, s in enumerate(part_summaries, 1))
         summary = _ask(COMBINE_PROMPT.format(rules=RULES, text=joined), model)
 

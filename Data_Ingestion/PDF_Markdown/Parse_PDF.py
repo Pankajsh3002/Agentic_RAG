@@ -13,7 +13,7 @@ import pymupdf as fitz
 from PIL import Image
 
 from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling_core.types.doc import PictureItem, TableItem, TextItem
 
@@ -35,20 +35,35 @@ VLM_PROMPT = "Extract the text exactly as it appears in the image and format as 
 _LOCAL_LOCK = threading.Lock()
 
 
+_CONVERTER = None
+_CONVERTER_LOCK = threading.Lock()
+
+
 def _build_converter() -> DocumentConverter:
     pipeline_options = PdfPipelineOptions()
     pipeline_options.do_ocr = False
     pipeline_options.do_table_structure = True
-    pipeline_options.images_scale = 2.0
-    pipeline_options.generate_page_images = True
+    pipeline_options.table_structure_options.mode = TableFormerMode.FAST
+    pipeline_options.accelerator_options.num_threads = 2
+    pipeline_options.images_scale = 1.0
+    pipeline_options.generate_page_images = False
     pipeline_options.generate_picture_images = True
-    pipeline_options.do_picture_classification = True
+    pipeline_options.do_picture_classification = False
 
     return DocumentConverter(
         format_options={
             InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
         }
     )
+
+
+def _get_converter() -> DocumentConverter:
+    global _CONVERTER
+    if _CONVERTER is None:
+        with _CONVERTER_LOCK:
+            if _CONVERTER is None:
+                _CONVERTER = _build_converter()
+    return _CONVERTER
 
 
 def _ocr_picture(pil_image) -> str:
@@ -112,89 +127,48 @@ def _merge_ocr_into_markdown(markdown_output: str, ocr_texts: list) -> str:
     return enhanced_markdown
 
 
-def _process_page(
-    pdf_path: str,
-    total_pages: int,
-    converter: DocumentConverter,
-    page_number: int,
-) -> str:
-    """Processes one page and returns its final text block (including the page footer)."""
-    try:
-        with _LOCAL_LOCK:
-            image_searchable = check_pdf_searchability(pdf_path, page_number, 90)
-        # image_searchable = {"status": "searchable"}
-
-        if image_searchable.get("status") == "searchable":
-            print(f"Page {page_number} is already searchable.")
-
-            with _LOCAL_LOCK:
-                result = converter.convert(pdf_path, page_range=(page_number, page_number))
-                docling_doc = result.document
-
-                # Pull the picture images while still holding the lock
-                pil_images = []
-                for node, level in docling_doc.iterate_items():
-                    if isinstance(node, PictureItem):
-                        pil_image = node.get_image(docling_doc)
-                        if pil_image:
-                            pil_images.append(pil_image)
-
-                markdown_output = docling_doc.export_to_markdown()
-
-            # VLM calls for pictures run outside the lock
-            ocr_texts = []
-            for pil_image in pil_images:
-                ocr_text = _ocr_picture(pil_image)
-                if ocr_text:
-                    ocr_texts.append(ocr_text)
-
-            enhanced_markdown = _merge_ocr_into_markdown(markdown_output, ocr_texts)
-            return f"{enhanced_markdown}\n\nPage {page_number} of {total_pages}\n\n"
-
-        print(f"Page {page_number} requires vision extraction.")
-
-        vlm_response = invoke_llm(
-            model_name=VLM_MODEL,
-            prompt=VLM_PROMPT,
-            is_image="y",  # case-insensitive
-            image_path=pdf_path,
-            pages=page_number,
-        )
-        return f"{vlm_response['response']}\n\nPage {page_number} of {total_pages}\n\n"
-
-    except Exception as e:
-        # One failed page should not kill the whole document
-        logger.error("Page %s failed: %s", page_number, e)
-        return f"[Extraction failed for page {page_number}]\n\nPage {page_number} of {total_pages}\n\n"
-
-
 def parse_pdf_with_docling(pdf_path: str, max_workers: int = DEFAULT_MAX_WORKERS) -> str:
     """
-    Parses a PDF using Docling and extracts OCR text from images.
-    Pages are processed concurrently but always assembled in ascending order.
+    Parses a searchable PDF using Docling in a single optimized pass,
+    preserving table structure and extracting picture OCR where available.
 
     Args:
         pdf_path (str): Path to the PDF file.
-        max_workers (int): Number of pages processed concurrently.
+        max_workers (int): Number of concurrent workers for picture OCR.
 
     Returns:
         str: The parsed content as a markdown string.
     """
-    converter = _build_converter()
+    converter = _get_converter()
 
-    with fitz.open(pdf_path) as fitz_doc:
-        total_pages = len(fitz_doc)
+    with _LOCAL_LOCK:
+        result = converter.convert(pdf_path)
+        docling_doc = result.document
 
-    page_numbers = list(range(1, total_pages + 1))
-    worker = partial(_process_page, pdf_path, total_pages, converter)
+        pil_images = []
+        for node, level in docling_doc.iterate_items():
+            if isinstance(node, PictureItem):
+                try:
+                    pil_image = node.get_image(docling_doc)
+                    if pil_image:
+                        pil_images.append(pil_image)
+                except Exception as e:
+                    logger.warning("Could not extract picture image: %s", e)
 
-    # executor.map yields results in the same order as the input iterable,
-    # regardless of which worker finishes first.
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        page_texts = list(executor.map(worker, page_numbers))
+        markdown_output = docling_doc.export_to_markdown()
 
-    complete_text = "".join(page_texts)
-    return complete_text.replace("&amp;", "&").strip()
+    # VLM calls for pictures run outside the lock concurrently
+    if pil_images:
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                ocr_texts = list(executor.map(_ocr_picture, pil_images))
+            ocr_texts = [t for t in ocr_texts if t]
+            if ocr_texts:
+                markdown_output = _merge_ocr_into_markdown(markdown_output, ocr_texts)
+        except Exception as e:
+            logger.warning("Picture OCR failed (%s); using base Docling markdown", e)
+
+    return markdown_output.replace("&amp;", "&").strip()
 
 
 if __name__ == "__main__":
