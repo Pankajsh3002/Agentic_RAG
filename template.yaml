@@ -36,11 +36,22 @@ Resources:
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
       LifecycleConfiguration:
+      
         Rules:
           - Id: delete-uploads-after-one-day
             Status: Enabled
             Prefix: uploads/
             ExpirationInDays: 1
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins:
+              - http://127.0.0.1:8000
+              - http://localhost:8000
+            AllowedMethods:
+              - POST
+            AllowedHeaders:
+              - "*"
+            MaxAge: 3000
 
   WorkerLogGroup:
     Type: AWS::Logs::LogGroup

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Optional, Set
 
 # Ensure project root is on sys.path so package imports resolve from any working directory
-PROJECT_ROOT = "/home/pankaj/projects/Agentic_Rag"
+PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
@@ -19,7 +19,7 @@ from Data_Ingestion.PDF_Markdown.Parse_PDF import parse_pdf_with_docling
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_WORKERS = 3
-EXTRACTED_FILES_DIR = "/home/pankaj/projects/Agentic_Rag/Data_Ingestion/Extracted_Files"
+EXTRACTED_FILES_DIR = os.getenv("EXTRACTED_FILES_DIR", str(Path(PROJECT_ROOT) / "Data_Ingestion" / "Extracted_Files"))
 
 IMAGE_EXTENSIONS = {".tif", ".tiff", ".jpg", ".png", ".jpeg"}
 HTML_EXTENSIONS = {".html", ".htm"}

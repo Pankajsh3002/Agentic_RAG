@@ -4,6 +4,11 @@ import sys
 import time
 from pathlib import Path
 
+# Add project root to sys.path so 'db' and other top-level modules can be imported
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import boto3
 
 from db.database import create_workspace, get_document_status, list_workspaces, register_document

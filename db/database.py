@@ -151,6 +151,14 @@ def delete_expired_workspaces(hours: int = 24) -> int:
     ).fetchall()
     return len(rows)
 
+def abort_pending_upload(doc_id: str, workspace_id: str) -> bool:
+    """Remove a document whose browser upload to S3 never completed."""
+    row = get_conn().execute(
+        "DELETE FROM documents WHERE doc_id = %s AND workspace_id = %s "
+        "AND status = 'pending' AND stage IS NULL RETURNING doc_id",
+        (doc_id, workspace_id),
+    ).fetchone()
+    return row is not None
 
 # ---------------- documents ----------------
 def register_document(workspace_id: str, filename: str, content_hash: str, force: bool = False) -> dict:

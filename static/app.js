@@ -35,6 +35,7 @@
     docs: [], lastDone: null, pollTimer: null,
     tab: "workspaces",
     chats: {}, askBuiltFor: null,
+    uploadMode: "local",
     uploadTarget: null, uploading: [], notices: [], errors: [], md: null,
     summaries: [], summaryDoc: null,
     events: [], timelineDoc: "all",
@@ -426,17 +427,48 @@
     for (const file of files) await uploadOne(wsId, file, false);
   }
 
+    async function sha256Hex(file) {
+    const hash = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+    return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
   async function uploadOne(wsId, file, force) {
     state.uploading.push(file.name);
     renderChrome();
+    let registered = null;      // a document row exists but its file has not arrived yet
     try {
-      const form = new FormData();
-      form.append("file", file);
-      form.append("force", force ? "true" : "false");
-      const data = await api("/workspaces/" + wsId + "/documents", { method: "POST", body: form });
-      if (state.wsId !== wsId) return;
-      if (data.duplicate) state.notices.push({ file, status: data.status });
+      if (state.uploadMode === "s3") {
+        if (!(window.crypto && crypto.subtle)) {
+          throw new Error("This browser cannot check files here. Open the page at localhost or over https.");
+        }
+        const digest = await sha256Hex(file);
+        const init = await api("/workspaces/" + wsId + "/uploads", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename: file.name, size: file.size, sha256: digest, force }),
+        });
+        if (init.duplicate) {
+          if (state.wsId === wsId) state.notices.push({ file, status: init.status });
+        } else {
+          registered = init.doc_id;
+          const form = new FormData();
+          Object.entries(init.upload.fields).forEach(([k, v]) => form.append(k, v));
+          form.append("file", file);                  // the file must be the last field
+          const res = await fetch(init.upload.url, { method: "POST", body: form });
+          if (!res.ok) throw new Error("The file could not be sent to storage (" + res.status + ")");
+          registered = null;
+        }
+      } else {
+        const form = new FormData();
+        form.append("file", file);
+        form.append("force", force ? "true" : "false");
+        const data = await api("/workspaces/" + wsId + "/documents", { method: "POST", body: form });
+        if (state.wsId === wsId && data.duplicate) state.notices.push({ file, status: data.status });
+      }
     } catch (e) {
+      if (registered) {
+        api("/workspaces/" + wsId + "/uploads/" + registered, { method: "DELETE" }).catch(() => {});
+      }
       if (state.wsId === wsId) state.errors.push(file.name + ": " + e.message);
     } finally {
       const i = state.uploading.indexOf(file.name);
@@ -935,6 +967,10 @@
   document.querySelectorAll(".nav-item").forEach((b) => { b.onclick = guard(() => showTab(b.dataset.tab)); });
 
   (async () => {
+    try {
+      const cfg = await api("/config");
+      state.uploadMode = cfg.upload_mode;
+    } catch (e) { /* stay in local mode */ }
     applyTab(location.hash.slice(1));
     await loadWorkspaces();
     if (!state.wsId) { renderChrome(); await loadActiveTab(); }

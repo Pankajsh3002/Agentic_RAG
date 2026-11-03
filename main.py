@@ -26,10 +26,10 @@ from Data_Ingestion.Markdown_Router import (  # adjust if your router lives else
     MAIL_EXTENSIONS, PDF_EXTENSIONS, TABULAR_EXTENSIONS,
 )
 from db.database import (
-    begin_retry, create_workspace, delete_expired_workspaces, delete_workspace,
+    abort_pending_upload, begin_retry, create_workspace, delete_expired_workspaces, delete_workspace,
     fail_interrupted_documents, get_document_markdown, get_document_status, get_summary, get_workspace,
     list_documents, list_entities, list_events, list_relations, list_summaries,
-    list_workspaces, register_document,
+    list_workspaces, register_document, set_failed,
 )
 from Pipeline.process_document import process_document, retry_failed_branches
 
@@ -41,6 +41,8 @@ ALLOWED_EXTENSIONS = (
     | TABULAR_EXTENSIONS | DOCX_EXTENSIONS | PDF_EXTENSIONS
 )
 MAX_UPLOAD_MB = 50
+UPLOAD_BUCKET = os.getenv("UPLOAD_BUCKET", "")     # set: browsers upload straight to S3
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 WORKSPACE_TTL_HOURS = int(os.getenv("WORKSPACE_TTL_HOURS", "24"))
 SESSION_COOKIE = "rag_session"
 SESSION_MAX_AGE = 7 * 24 * 3600
@@ -65,12 +67,13 @@ async def _expiry_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for the FastAPI app."""
-    try:
-        n = await asyncio.to_thread(fail_interrupted_documents)
-        if n:
-            logger.warning("Marked %d interrupted document(s) as failed", n)
-    except Exception:
-        logger.exception("Could not check for interrupted documents")
+    if not UPLOAD_BUCKET:    # with direct uploads, the cloud worker owns running jobs, not this server
+        try:
+            n = await asyncio.to_thread(fail_interrupted_documents)
+            if n:
+                logger.warning("Marked %d interrupted document(s) as failed", n)
+        except Exception:
+            logger.exception("Could not check for interrupted documents")
     task = asyncio.create_task(_expiry_loop())
     yield
     task.cancel()
@@ -163,6 +166,8 @@ async def upload_document(
     file: UploadFile = File(...),
     force: bool = Form(False),
 ):
+    if UPLOAD_BUCKET:
+        raise HTTPException(400, "This server uses direct uploads. Please reload the page.")
     filename = Path(file.filename or "").name
     ext = Path(filename).suffix.lower()
     if not filename or ext not in ALLOWED_EXTENSIONS:
@@ -315,3 +320,74 @@ def chat(body: ChatIn, ws_id: str = Depends(owned_workspace), sid: str = Depends
     except Exception:
         logger.exception("chat failed")
         raise HTTPException(502, "The assistant could not answer right now. Please try again.")
+
+
+
+# ---------- direct uploads to S3 ----------
+_s3 = None
+
+
+def _s3_client():
+    global _s3
+    if _s3 is None:
+        import boto3
+        from botocore.config import Config
+        region = os.getenv("AWS_REGION") or os.getenv("DB_REGION") or "ap-south-1"
+        _s3 = boto3.client(
+            "s3", region_name=region, endpoint_url=f"https://s3.{region}.amazonaws.com",
+            config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+        )
+    return _s3
+
+
+@app.get("/config", include_in_schema=False)
+def app_config():
+    return {"upload_mode": "s3" if UPLOAD_BUCKET else "local", "max_upload_mb": MAX_UPLOAD_MB}
+
+
+class UploadInit(BaseModel):
+    filename: str
+    size: int
+    sha256: str
+    force: bool = False
+
+
+@app.post("/workspaces/{workspace_id}/uploads")
+def init_upload(body: UploadInit, ws_id: str = Depends(owned_workspace)):
+    if not UPLOAD_BUCKET:
+        raise HTTPException(400, "Direct uploads are not enabled on this server")
+
+    filename = Path(body.filename or "").name.strip()
+    ext = Path(filename).suffix.lower()
+    if not filename or len(filename) > 150 or ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(400, f"Unsupported file type '{ext}'")
+    if not (0 < body.size <= MAX_UPLOAD_BYTES):
+        raise HTTPException(413, f"Files must be between 1 byte and {MAX_UPLOAD_MB} MB")
+    digest = body.sha256.strip().lower()
+    if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+        raise HTTPException(400, "Invalid checksum")
+
+    try:
+        result = register_document(ws_id, filename, digest, body.force)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    if result["duplicate"]:
+        return JSONResponse(status_code=200, content=result)
+
+    key = f"uploads/{ws_id}/{result['doc_id']}/{filename}"
+    try:
+        post = _s3_client().generate_presigned_post(
+            Bucket=UPLOAD_BUCKET, Key=key,
+            Conditions=[["content-length-range", 1, MAX_UPLOAD_BYTES]],   # S3 enforces the size cap
+            ExpiresIn=600,
+        )
+    except Exception as e:
+        logger.exception("could not create an upload form")
+        set_failed(result["doc_id"], "upload", "Could not prepare the upload.", repr(e)[:500])
+        raise HTTPException(502, "Could not prepare the upload. Please try again.")
+    return JSONResponse(status_code=202, content={**result, "upload": post})
+
+
+@app.delete("/workspaces/{workspace_id}/uploads/{doc_id}")
+def abort_upload(doc_id: uuid.UUID, ws_id: str = Depends(owned_workspace)):
+    return {"removed": abort_pending_upload(str(doc_id), ws_id)}
