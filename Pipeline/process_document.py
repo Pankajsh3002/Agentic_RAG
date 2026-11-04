@@ -39,7 +39,7 @@ def _run_branch(name: str, doc_id: str, markdown: str) -> tuple[str, str | None]
         close_conn()   # each worker thread has its own connection
 
 
-def process_document(local_path: str, doc_id: str, max_workers: int = 5) -> bool:
+def process_document(local_path: str, doc_id: str, max_workers: int = 15) -> bool:
     extracted_dir = tempfile.mkdtemp(prefix="extracted_")
     stage = "starting"
     try:

@@ -5,7 +5,7 @@
   const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const TABS = ["workspaces", "ask", "summary", "timeline", "connections"];
   const TAB_LABELS = {
-    workspaces: "Workspace", ask: "Query Document", summary: "Summary",
+    workspaces: "Documents", ask: "Query Document", summary: "Summary",
     timeline: "Timelines", connections: "Connections",
   };
   const STEP_ORDER = ["chunks", "summary", "events", "graph"];
@@ -202,6 +202,8 @@
         body: JSON.stringify({ name: $("wsName").value.trim() || "My workspace" }),
       });
       $("wsName").value = "";
+      const container = $("newWsContainer");
+      if (container) container.classList.add("hidden");
       await loadWorkspaces(ws.workspace_id);
     } catch (e) { $("wsErr").textContent = e.message; }
   }
@@ -229,6 +231,13 @@
     renderSidebar();
     renderWorkspaceCards();
     updateCrumbs();
+    const ws = currentWs();
+    const nameEl = $("activeWsName");
+    const statsEl = $("activeWsStats");
+    if (nameEl) nameEl.textContent = ws ? ws.name : "Default Workspace";
+    if (statsEl) {
+      statsEl.textContent = ws ? `(${ws.documents} file${ws.documents === 1 ? "" : "s"}, ${ws.ready_documents} ready)` : "";
+    }
     if (state.tab === "ask") renderAsk();
   }
 
@@ -368,6 +377,13 @@
     const actions = el("span", "", "doc-actions");
     const showingMd = state.md && state.md.docId === d.doc_id;
     if (d.status === "done") {
+      const q = el("button", "Ask Query \u2192", "btn-sm query-btn");
+      q.title = "Ask questions about this document";
+      q.onclick = guard(async () => {
+        if (state.wsId) await openQuery(state.wsId);
+      });
+      actions.appendChild(q);
+
       const m = el("button", showingMd ? "Hide markdown" : "View markdown", "btn-sm");
       m.onclick = guard(() => toggleMarkdown(d.doc_id));
       actions.appendChild(m);
@@ -953,10 +969,69 @@
   $("wsCreate").onclick = guard(createWorkspace);
   $("wsName").addEventListener("keydown", (e) => { if (e.key === "Enter") guard(createWorkspace)(); });
 
+  const toggleNewWs = $("toggleNewWs");
+  const cancelNewWs = $("cancelNewWs");
+  const newWsContainer = $("newWsContainer");
+  if (toggleNewWs && newWsContainer) {
+    toggleNewWs.onclick = () => {
+      newWsContainer.classList.toggle("hidden");
+      if (!newWsContainer.classList.contains("hidden")) {
+        $("wsName").focus();
+      }
+    };
+  }
+  if (cancelNewWs && newWsContainer) {
+    cancelNewWs.onclick = () => {
+      newWsContainer.classList.add("hidden");
+      $("wsErr").textContent = "";
+    };
+  }
+
+  function triggerDirectUpload() {
+    if (!state.wsId && state.workspaces.length) {
+      state.wsId = state.workspaces[0].workspace_id;
+    }
+    state.uploadTarget = state.wsId;
+    $("file").click();
+  }
+
+  const directDropzone = $("directDropzone");
+  const btnDirectUpload = $("btnDirectUpload");
+  if (btnDirectUpload) {
+    btnDirectUpload.onclick = triggerDirectUpload;
+  }
+  if (directDropzone) {
+    directDropzone.onclick = (ev) => {
+      if (ev.target.closest("#btnDirectUpload")) return;
+      triggerDirectUpload();
+    };
+    directDropzone.addEventListener("dragover", (ev) => {
+      ev.preventDefault();
+      directDropzone.classList.add("dragover");
+    });
+    directDropzone.addEventListener("dragleave", (ev) => {
+      if (!directDropzone.contains(ev.relatedTarget)) {
+        directDropzone.classList.remove("dragover");
+      }
+    });
+    directDropzone.addEventListener("drop", (ev) => {
+      ev.preventDefault();
+      directDropzone.classList.remove("dragover");
+      const files = Array.from((ev.dataTransfer && ev.dataTransfer.files) || []);
+      if (!files.length) return;
+      if (!state.wsId && state.workspaces.length) {
+        state.wsId = state.workspaces[0].workspace_id;
+      }
+      if (state.wsId) {
+        guard(handleFiles)(state.wsId, files);
+      }
+    });
+  }
+
   // Choosing files uploads them straight away.
   $("file").addEventListener("change", () => {
     const files = Array.from($("file").files);
-    const target = state.uploadTarget;
+    const target = state.uploadTarget || state.wsId;
     $("file").value = "";            // lets you choose the same file again later
     if (target && files.length) guard(handleFiles)(target, files);
   });

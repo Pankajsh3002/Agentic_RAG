@@ -81,7 +81,7 @@ Resources:
           EMBED_MODEL: !Ref EmbedModel
           EMBED_DIM: !Ref EmbedDim
           PARSE_CONCURRENCY: "1"
-          PARSE_WORKERS: "4"
+          PARSE_WORKERS: "15"
           # Add other non-secret settings from your .env here, one per line. Never put secrets here.
       Policies:
         - Statement:

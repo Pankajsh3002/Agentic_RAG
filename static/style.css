@@ -71,6 +71,54 @@ input[type=text] { flex: 1; min-width: 0; }
 .panel { padding: 1.25rem 1.5rem 3rem; }
 
 /* ---------- workspaces ---------- */
+.upload-dropzone {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: .75rem; padding: 2.25rem 1.5rem; border: 2px dashed var(--border-strong);
+  border-radius: 16px; background: var(--panel); cursor: pointer; text-align: center;
+  transition: all .2s ease; margin-bottom: 1.25rem;
+}
+.upload-dropzone:hover, .upload-dropzone.dragover {
+  border-color: var(--accent); background: var(--accent-bg);
+}
+.dropzone-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 52px; height: 52px; border-radius: 50%; background: var(--bg);
+  color: var(--accent); box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+.dropzone-icon svg { display: block; }
+.dropzone-title { font-size: 1.15rem; font-weight: 600; margin: 0; }
+.dropzone-desc { margin: .25rem 0 0; color: var(--muted); }
+.format-badge {
+  display: inline-block; font-size: .75rem; color: var(--muted);
+  background: var(--bg); padding: .2rem .65rem; border-radius: 999px;
+  border: 1px solid var(--border); margin-top: .4rem;
+}
+.upload-btn {
+  display: inline-flex; align-items: center; gap: .5rem;
+  padding: .55rem 1.25rem; font-size: .92rem; font-weight: 500;
+  border-radius: 10px; margin-top: .25rem;
+}
+.upload-btn svg { display: block; }
+.ws-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: .4rem 0 .65rem; margin-bottom: .75rem; border-bottom: 1px solid var(--border);
+}
+.ws-badge { display: inline-flex; align-items: center; gap: .4rem; font-size: .9rem; }
+.new-ws-toggle {
+  font-size: .82rem; color: var(--accent); background: none; border: 0;
+  cursor: pointer; padding: .2rem .4rem; font-weight: 500;
+}
+.new-ws-toggle:hover { text-decoration: underline; background: none; }
+.new-ws-form {
+  margin: .25rem 0 1rem; padding: .85rem; background: var(--panel);
+  border-radius: 10px; border: 1px solid var(--border);
+}
+.btn-sm.query-btn {
+  background: var(--ok-bg); color: var(--ok); border-color: var(--ok);
+  display: inline-flex; align-items: center; gap: .3rem; font-weight: 500;
+}
+.btn-sm.query-btn:hover { opacity: .9; }
+
 .ws-list { display: flex; flex-direction: column; gap: .75rem; margin-top: 1rem; }
 .ws-card { border: 1px solid var(--border); border-radius: 12px; background: var(--bg); }
 .ws-card.selected { border-color: var(--accent); }

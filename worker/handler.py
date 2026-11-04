@@ -127,7 +127,7 @@ def _process_object(bucket: str, key: str, remaining_ms: int) -> None:
 
         # Import heavy ML pipeline only after DB connection & download are validated
         from Pipeline.process_document import process_document
-        ok = process_document(local_path, doc_id, max_workers=int(os.getenv("PARSE_WORKERS", "4")))
+        ok = process_document(local_path, doc_id, max_workers=int(os.getenv("PARSE_WORKERS", "15")))
         if ok:
             s3.delete_object(Bucket=bucket, Key=key)   # keep the file if it failed, so it can be inspected
     except Exception as e:

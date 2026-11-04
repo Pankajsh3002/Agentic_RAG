@@ -19,7 +19,7 @@ from Data_Ingestion.PDF_Markdown.Pdf_Searchability import check_pdf_searchabilit
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAX_WORKERS = int(os.getenv("PARSE_WORKERS", "4"))
+DEFAULT_MAX_WORKERS = int(os.getenv("PARSE_WORKERS", "15"))
 EXTRACTED_FILES_DIR = os.getenv("EXTRACTED_FILES_DIR", str(Path(PROJECT_ROOT) / "Data_Ingestion" / "Extracted_Files"))
 
 IMAGE_EXTENSIONS = {".tif", ".tiff", ".jpg", ".png", ".jpeg"}
@@ -98,16 +98,16 @@ def _route_single_file(
         logger.info("Routing tabular file '%s' -> parse_tabular_file", file_path)
         return parse_tabular_file(file_path)
 
-    # 5. DOCX files (.docx, .doc) -> convert to PDF in extracted_dir -> parse_pdf_with_docling
+    # 5. DOCX files (.docx, .doc) -> convert to PDF in extracted_dir -> parse_image_with_llm
     if ext in DOCX_EXTENSIONS:
         logger.info(
-            "Routing DOCX file '%s' -> convert_docx_to_pdf -> parse_pdf_with_docling",
+            "Routing DOCX file '%s' -> convert_docx_to_pdf -> parse_image_with_llm",
             file_path,
         )
         converted_ret = convert_docx_to_pdf(file_path, extracted_dir)
         pdf_path = _resolve_converted_pdf_path(file_path, extracted_dir, converted_ret)
         try:
-            return parse_pdf_with_docling(pdf_path, max_workers=max_workers)
+            return parse_image_with_llm(pdf_path, max_workers=max_workers)
         finally:
             if os.path.exists(pdf_path):
                 try:
@@ -116,34 +116,10 @@ def _route_single_file(
                 except OSError as e:
                     logger.warning("Could not remove temporary PDF '%s': %s", pdf_path, e)
 
-    # 6. PDF files (.pdf)
+    # 6. PDF files (.pdf) -> parse_image_with_llm
     if ext in PDF_EXTENSIONS:
-        try:
-            search_result = check_pdf_searchability(file_path, searchable_percent=90)
-            status = search_result.get("status")
-            logger.info(
-                "PDF searchability for '%s': %s (searchable_percent: %s%%)",
-                file_path,
-                status,
-                search_result.get("searchable_percent"),
-            )
-            if status == "searchable":
-                logger.info("Routing searchable PDF '%s' -> parse_pdf_with_docling", file_path)
-                return parse_pdf_with_docling(file_path, max_workers=max_workers)
-            else:
-                logger.info(
-                    "Routing unsearchable/partial PDF '%s' (status: %s) -> parse_image_with_llm",
-                    file_path,
-                    status,
-                )
-                return parse_image_with_llm(file_path, max_workers=max_workers)
-        except Exception as e:
-            logger.warning(
-                "Error checking PDF searchability for '%s' (%s), defaulting to parse_pdf_with_docling",
-                file_path,
-                e,
-            )
-            return parse_pdf_with_docling(file_path, max_workers=max_workers)
+        logger.info("Routing PDF file '%s' -> parse_image_with_llm", file_path)
+        return parse_image_with_llm(file_path, max_workers=max_workers)
 
     raise ValueError(f"Unsupported file format '{ext}' for file: {file_path}")
 

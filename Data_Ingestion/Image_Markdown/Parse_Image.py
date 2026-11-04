@@ -1,4 +1,5 @@
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 import fitz
@@ -7,14 +8,15 @@ from Model_Calling.Model_Service import get_llm, invoke_llm
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAX_WORKERS = 5
+DEFAULT_MAX_WORKERS = int(os.getenv("PARSE_WORKERS", "15"))
 
 
 def _extract_page_text(pdf_path: str, page_number: int) -> str:
     """Runs the VLM on a single page and returns its extracted text."""
     try:
+        model = os.getenv("MAIN_MODEL", "openai/gpt-6-luna")
         vlm_response = invoke_llm(
-            model_name="openai/gpt-6-luna",
+            model_name=model,
             prompt="Extract the text exactly as it appears in the image and format as Markdown.",
             is_image="y",  # case-insensitive
             image_path=pdf_path,

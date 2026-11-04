@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Agentic RAG</title>
-  <link rel="stylesheet" href="/static/style.css?v=6">
+  <link rel="stylesheet" href="/static/style.css?v=7">
 </head>
 <body>
   <div id="banner" class="banner hidden" role="alert"></div>
@@ -21,7 +21,7 @@
 
       <nav class="nav" role="tablist" aria-label="Sections">
         <button class="nav-item active" role="tab" data-tab="workspaces">
-          <span class="nav-icon" data-icon="layers"></span><span class="nav-label">Workspace</span>
+          <span class="nav-icon" data-icon="upload"></span><span class="nav-label">Documents &amp; Upload</span>
         </button>
         <button class="nav-item" role="tab" data-tab="ask">
           <span class="nav-icon" data-icon="chat"></span><span class="nav-label">Query Document</span>
@@ -45,11 +45,43 @@
       <div id="crumbs" class="crumbs"></div>
 
       <section id="tab-workspaces" class="tabpanel panel">
-        <div class="row">
-          <input type="text" id="wsName" placeholder="New workspace name" maxlength="80">
-          <button id="wsCreate" class="primary">Create workspace</button>
+        <div id="directDropzone" class="upload-dropzone">
+          <div class="dropzone-icon">
+            <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+          </div>
+          <div class="dropzone-text">
+            <h3 class="dropzone-title">Upload Documents to Analyze &amp; Query</h3>
+            <p class="dropzone-desc">Drag &amp; drop your file here, or click to browse</p>
+            <span class="format-badge">Supports PDF &bull; DOCX &bull; CSV &bull; Excel &bull; Images &bull; Mail &bull; HTML</span>
+          </div>
+          <button id="btnDirectUpload" type="button" class="primary upload-btn">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            Select File to Upload
+          </button>
         </div>
-        <div id="wsErr" class="error"></div>
+
+        <div class="ws-bar">
+          <div class="ws-badge">
+            <span class="muted small">Workspace:</span>
+            <strong id="activeWsName">Default Workspace</strong>
+            <span id="activeWsStats" class="muted small"></span>
+          </div>
+          <button id="toggleNewWs" type="button" class="new-ws-toggle">+ New Workspace</button>
+        </div>
+
+        <div id="newWsContainer" class="new-ws-form hidden">
+          <div class="row">
+            <input type="text" id="wsName" placeholder="New workspace name" maxlength="80">
+            <button id="wsCreate" class="primary">Create workspace</button>
+            <button id="cancelNewWs" type="button" class="btn-sm">Cancel</button>
+          </div>
+          <div id="wsErr" class="error"></div>
+        </div>
+
         <div id="wsCards" class="ws-list"></div>
       </section>
 
@@ -82,6 +114,6 @@
   <input type="file" id="file" multiple hidden
          accept=".pdf,.doc,.docx,.html,.htm,.eml,.msg,.xml,.xlsx,.xls,.csv,.tsv,.png,.jpg,.jpeg,.tif,.tiff">
 
-  <script src="/static/app.js?v=6"></script>
+  <script src="/static/app.js?v=7"></script>
 </body>
 </html>

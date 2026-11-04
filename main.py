@@ -172,7 +172,14 @@ def create_ws(body: WorkspaceIn, sid: str = Depends(get_session_id)):
 
 @app.get("/workspaces")
 def list_ws(sid: str = Depends(get_session_id)):
-    return list_workspaces(sid)
+    rows = list_workspaces(sid)
+    if not rows:
+        try:
+            create_workspace(sid, "Default Workspace")
+            rows = list_workspaces(sid)
+        except Exception as e:
+            logger.warning("Could not auto-create default workspace: %s", e)
+    return rows
 
 
 @app.delete("/workspaces/{workspace_id}")
