@@ -5,6 +5,7 @@
 [![AWS Lambda](https://img.shields.io/badge/AWS-Lambda%20%26%20S3-FF9900.svg?logo=amazon-aws&logoColor=white)](https://aws.amazon.com/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-pgvector-4169E1.svg?logo=postgresql&logoColor=white)](https://github.com/pgvector/pgvector)
 [![Docker](https://img.shields.io/badge/Docker-Containerized-2496ED.svg?logo=docker&logoColor=white)](https://www.docker.com/)
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-Online-brightgreen.svg)](https://ecoydsx27jlar5qcljjtlbulbq0pgpwa.lambda-url.ap-south-1.on.aws/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 An enterprise-grade, serverless **Agentic Retrieval-Augmented Generation (RAG)** platform capable of ingesting diverse, complex document formats (PDFs, DOCX, CSV, Excel, Images, TIFF, HTML, and Emails), extracting dense structural information with ultra-fast parallel Vision-Language Models (VLMs), and enabling self-verifying, evidence-backed conversational intelligence.
@@ -163,8 +164,8 @@ flowchart LR
 ### 1. Clone & Set Up Virtual Environment
 
 ```bash
-git clone https://github.com/<your-username>/Agentic_Rag.git
-cd Agentic_Rag
+git clone https://github.com/Pankajsh3002/Agentic_RAG.git
+cd Agentic_RAG
 
 python3 -m venv .venv
 source .venv/bin/activate
@@ -250,4 +251,4 @@ sam deploy --no-confirm-changeset
 - Role: AI Engineer | GenAI & Agentic Systems
 - Location: New Delhi, India
 - Email: pankajsharma981105@gmail.com
-- [LinkedIn](#) &bull; [GitHub](#)
+- [GitHub Profile](https://github.com/Pankajsh3002) &bull; [Agentic RAG Repo](https://github.com/Pankajsh3002/Agentic_RAG)
